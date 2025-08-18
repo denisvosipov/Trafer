@@ -1,7 +1,7 @@
 # ==========================
 # File: app.py
 # Run with: streamlit run app.py
-# Testedithere
+# ==========================
 import streamlit as st
 import sqlite3
 import json
@@ -14,6 +14,10 @@ DB_PATH = 'app.db'
 # ---------------
 # Utilities
 # ---------------
+
+def set_page(new_page: str):
+    st.session_state.page = new_page
+
 
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -103,6 +107,7 @@ def ensure_demo_users():
 
 
 def login_form():
+    # Kept for compatibility (unused in new header-based UI)
     st.sidebar.subheader("Sign in")
     email = st.sidebar.text_input("Email", key="login_email")
     pw = st.sidebar.text_input("Password", type="password", key="login_pw")
@@ -118,11 +123,27 @@ def login_form():
         else:
             st.error("Invalid credentials")
 
+def login_form_main():
+    st.subheader("Sign in")
+    email = st.text_input("Email", key="login_email_main")
+    pw = st.text_input("Password", type="password", key="login_pw_main")
+    if st.button("Sign in", key="signin_main"):
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute('SELECT id, role, name, email, password_hash FROM users WHERE email = ?', (email,))
+        row = c.fetchone()
+        conn.close()
+        if row and row[4] == hash_pw(pw):
+            st.session_state.user = {"id": row[0], "role": row[1], "name": row[2], "email": row[3]}
+            set_page("Home")
+            st.rerun()
+        else:
+            st.error("Invalid credentials")
 
 def require_auth(role: str = None) -> Optional[Dict[str, Any]]:
     user = st.session_state.get("user")
     if not user:
-        st.info("Please sign in using the sidebar.")
+        st.info("Please sign in using the header.")
         return None
     if role and user["role"] != role:
         st.error(f"This section is for {role}s only.")
@@ -192,6 +213,7 @@ def create_paper(title: str, problem_ids: List[str], mode: str, show_ids: bool):
 # Submissions
 # ---------------
 
+
 def record_submission(paper_id: int, pupil_id: int, answers: Dict[str, Any], score: float, attempt_no: int):
     conn = get_conn()
     c = conn.cursor()
@@ -219,6 +241,45 @@ def get_teacher_logs():
     rows = c.fetchall()
     conn.close()
     return rows
+
+def get_pupil_attempts(pupil_id: int):
+    """Returns list of (submitted_at, paper_id, paper_title, mode, score, attempt_no)."""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('''SELECT s.submitted_at, p.id, p.title, p.mode, s.score, s.attempt_no
+                 FROM submissions s JOIN papers p ON s.paper_id = p.id
+                 WHERE s.pupil_id = ?
+                 ORDER BY s.submitted_at DESC''', (pupil_id,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_problem_count_for_papers(paper_ids: List[int]) -> Dict[int, int]:
+    if not paper_ids:
+        return {}
+    placeholders = ','.join(['?']*len(paper_ids))
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(f'SELECT id, problem_ids_json FROM papers WHERE id IN ({placeholders})', tuple(paper_ids))
+    res = {row[0]: len(json.loads(row[1])) for row in c.fetchall()}
+    conn.close()
+    return res
+
+def get_attempt_counts_by_paper(pupil_id: int) -> Dict[int, int]:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('SELECT paper_id, COUNT(*) FROM submissions WHERE pupil_id = ? GROUP BY paper_id', (pupil_id,))
+    d = {row[0]: row[1] for row in c.fetchall()}
+    conn.close()
+    return d
+
+def attempts_remaining(mode: str, attempts_so_far: int) -> Optional[int]:
+    if mode == 'training':
+        return None  # None = infinity for display
+    limit = 1 if mode == 'test1' else 2
+    rem = max(0, limit - attempts_so_far)
+    return rem
+
 
 
 # ---------------
@@ -311,9 +372,62 @@ def input_for_answer(prob: Dict[str, Any], key_prefix: str):
 # ---------------
 
 def page_home():
+    user = st.session_state.get("user")
     st.title("Problem DB (MVP)")
-    st.write("Small, simple system for problems & papers. Built in Streamlit.")
-    st.info("Use the sidebar to sign in. Demo users are pre-created: teacher@example.com / teach123; alice@example.com / alice123; bob@example.com / bob123")
+    if not user:
+        st.write("Small, simple system for problems & papers. Built in Streamlit.")
+        login_form_main()
+        st.caption("Demo users: teacher@example.com / teach123; alice@example.com / alice123; bob@example.com / bob123")
+        return
+
+    # Logged-in landing pages
+    if user["role"] == "pupil":
+        st.subheader("Access paper")
+        col1, col2 = st.columns([2,1])
+        with col1:
+            pid = st.text_input("Enter Paper ID", key="home_paper_id")
+        with col2:
+            if st.button("Open", key="open_paper_home"):
+                st.session_state.paper_id_input = pid
+                set_page("Pupil: Paper")
+                st.rerun()
+
+        st.divider()
+        st.subheader("Past attempts")
+        attempts = get_pupil_attempts(user['id'])
+        if not attempts:
+            st.info("No attempts yet.")
+        else:
+            paper_ids = [row[1] for row in attempts]
+            counts = get_attempt_counts_by_paper(user['id'])
+            sizes = get_problem_count_for_papers(paper_ids)
+            # Table header
+            h = st.columns([3,2,3,2,2,2])
+            h[0].markdown("**Date/Time (UTC)**")
+            h[1].markdown("**Paper ID**")
+            h[2].markdown("**Title**")
+            h[3].markdown("**Score**")
+            h[4].markdown("**Attempts left**")
+            h[5].markdown("**Action**")
+            for i, (submitted_at, paper_id, title, mode, score, attempt_no) in enumerate(attempts):
+                y = sizes.get(paper_id, 0)
+                x = round((score/100.0) * y) if y else 0
+                rem = attempts_remaining(mode, counts.get(paper_id, 0))
+                rem_str = '∞' if rem is None else str(rem)
+                cols = st.columns([3,2,3,2,2,2])
+                cols[0].write(submitted_at)
+                cols[1].write(f"{paper_id}")
+                cols[2].write(title)
+                cols[3].write(f"{x} / {y} ({score:.0f}%)")
+                cols[4].write(rem_str)
+                if cols[5].button("Open", key=f"open_attempt_{i}"):
+                    st.session_state.paper_id_input = str(paper_id)
+                    set_page("Pupil: Paper")
+                    st.rerun()
+    else:
+        st.subheader("Welcome, Teacher")
+        st.write("Use the sidebar to manage Problems and Papers.")
+
 
 
 def page_teacher_problems():
@@ -392,40 +506,6 @@ def page_teacher_papers():
                 'Submitted at (UTC)': r[6]
             } for r in rows
         ], use_container_width=True)
-
-
-def page_pupil_problem():
-    user = require_auth("pupil")
-    if not user: return
-    st.header("Single Problem Practice")
-
-    pid = st.text_input("Enter Problem ID")
-    if not pid:
-        return
-    prob = get_problem(pid)
-    if not prob:
-        st.error("Problem not found.")
-        return
-
-    render_problem(prob, show_id=True)
-
-    ans = input_for_answer(prob, key_prefix=f"prob_{pid}")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Check"):
-            if prob['answer_type'] == 'single':
-                ok = check_single(str(ans), str(prob['answer']))
-            else:
-                ok = check_table(ans, prob['answer'])
-            st.success("Correct!") if ok else st.error("Incorrect.")
-    with col2:
-        if st.button("Reveal Answer"):
-            st.info("Correct answer:")
-            if prob['answer_type'] == 'single':
-                st.code(str(prob['answer']))
-            else:
-                st.code(json.dumps(prob['answer'], ensure_ascii=False, indent=2))
 
 
 def page_pupil_paper():
@@ -530,38 +610,53 @@ def main():
     init_db()
     ensure_demo_users()
 
-    # Sidebar nav
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", [
-        "Home",
-        "Teacher: Problems",
-        "Teacher: Papers",
-        "Pupil: Single Problem",
-        "Pupil: Paper",
-    ])
-
     if 'user' not in st.session_state:
         st.session_state.user = None
+    if 'page' not in st.session_state:
+        st.session_state.page = "Home"
 
-    # Auth controls
-    if st.session_state.user:
-        st.sidebar.success(f"Signed in as {st.session_state.user['name']} ({st.session_state.user['role']})")
-        if st.sidebar.button("Sign out"):
-            st.session_state.user = None
-    else:
-        login_form()
+    # Header (logo left, user info right)
+    # Header (logo left, user info right)
+    h1, hsp, h2 = st.columns([1,6,3])
+    with h1:
+        if st.button("🏫", help="Home", key="header_home_logo"):
+            set_page("Home")
+            st.rerun()
 
-    # Routes
+    with h2:
+        if st.session_state.user:
+            u = st.session_state.user
+            st.markdown(f"You are logged in as **{u['name']}** ({u['role']}).")
+            if st.button("Log out", key="logout_btn"):
+                st.session_state.user = None
+                set_page("Home")
+                st.rerun()
+        else:
+            st.markdown("Not signed in.")
+
+
+    # Teacher-only sidebar
+    if st.session_state.user and st.session_state.user["role"] == "teacher":
+        st.sidebar.title("Teacher")
+        if st.sidebar.button("Problem Editor", key="btn_problem_editor"):
+            set_page("Teacher: Problems")
+        if st.sidebar.button("Paper Editor", key="btn_paper_editor"):
+            set_page("Teacher: Papers")
+
+
+    # Route
+    page = st.session_state.page
     if page == "Home":
         page_home()
     elif page == "Teacher: Problems":
-        page_teacher_problems()
+        if require_auth("teacher"):
+            page_teacher_problems()
     elif page == "Teacher: Papers":
-        page_teacher_papers()
-    elif page == "Pupil: Single Problem":
-        page_pupil_problem()
+        if require_auth("teacher"):
+            page_teacher_papers()
     elif page == "Pupil: Paper":
-        page_pupil_paper()
+        if require_auth("pupil"):
+            page_pupil_paper()
 
 
 if __name__ == '__main__':
