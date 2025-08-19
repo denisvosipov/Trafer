@@ -97,31 +97,31 @@ def ensure_demo_users():
     (cnt,) = c.fetchone()
     if cnt == 0:
         users = [
-            ("teacher", "Teacher One", "teacher@example.com", hash_pw("teach123")),
-            ("pupil", "Pupil Alice", "alice@example.com", hash_pw("alice123")),
-            ("pupil", "Pupil Bob", "bob@example.com", hash_pw("bob123")),
+            ("teacher", "Teacher One", "teacher", hash_pw("1")),
+            ("pupil", "Pupil Alice", "alice", hash_pw("1")),
+            ("pupil", "Pupil Bob", "bob", hash_pw("1")),
         ]
         c.executemany('INSERT INTO users(role,name,email,password_hash) VALUES (?,?,?,?)', users)
         conn.commit()
     conn.close()
 
 
-def login_form():
-    # Kept for compatibility (unused in new header-based UI)
-    st.sidebar.subheader("Sign in")
-    email = st.sidebar.text_input("Email", key="login_email")
-    pw = st.sidebar.text_input("Password", type="password", key="login_pw")
-    if st.sidebar.button("Sign in"):
-        conn = get_conn()
-        c = conn.cursor()
-        c.execute('SELECT id, role, name, email, password_hash FROM users WHERE email = ?', (email,))
-        row = c.fetchone()
-        conn.close()
-        if row and row[4] == hash_pw(pw):
-            st.session_state.user = {"id": row[0], "role": row[1], "name": row[2], "email": row[3]}
-            st.success(f"Signed in as {row[2]} ({row[1]})")
-        else:
-            st.error("Invalid credentials")
+# def login_form():
+#     # Kept for compatibility (unused in new header-based UI)
+#     st.sidebar.subheader("Sign in")
+#     email = st.sidebar.text_input("Email", key="login_email")
+#     pw = st.sidebar.text_input("Password", type="password", key="login_pw")
+#     if st.sidebar.button("Sign in"):
+#         conn = get_conn()
+#         c = conn.cursor()
+#         c.execute('SELECT id, role, name, email, password_hash FROM users WHERE email = ?', (email,))
+#         row = c.fetchone()
+#         conn.close()
+#         if row and row[4] == hash_pw(pw):
+#             st.session_state.user = {"id": row[0], "role": row[1], "name": row[2], "email": row[3]}
+#             st.success(f"Signed in as {row[2]} ({row[1]})")
+#         else:
+#             st.error("Invalid credentials")
 
 def login_form_main():
     st.subheader("Sign in")
@@ -339,9 +339,9 @@ def editor_for_problem(existing=None):
         st.caption("Enter table as rows separated by newlines, cells by commas. Example: \nA,B\nC,D")
         table_text = ''
         if existing and isinstance(existing['answer'], list):
-            table_text = "\n".join([",".join(map(str,row)) for row in existing['answer']])
+            table_text = "\n".join([" ".join(map(str,row)) for row in existing['answer']])
         table_text = st.text_area("Correct answer table", value=table_text, height=120)
-        ans = [ [cell.strip() for cell in line.split(',')] for line in table_text.splitlines() if line.strip() != '' ]
+        ans = [ [cell.strip() for cell in line.split(' ')] for line in table_text.splitlines() if line.strip() != '' ]
     return content, answer_type, ans
 
 
@@ -373,11 +373,11 @@ def input_for_answer(prob: Dict[str, Any], key_prefix: str):
 
 def page_home():
     user = st.session_state.get("user")
-    st.title("Problem DB (MVP)")
+    st.title("")
     if not user:
         st.write("Small, simple system for problems & papers. Built in Streamlit.")
         login_form_main()
-        st.caption("Demo users: teacher@example.com / teach123; alice@example.com / alice123; bob@example.com / bob123")
+        st.caption("Demo users: teacher:1, alice:1, bob:1")
         return
 
     # Logged-in landing pages
@@ -615,7 +615,6 @@ def main():
     if 'page' not in st.session_state:
         st.session_state.page = "Home"
 
-    # Header (logo left, user info right)
     # Header (logo left, user info right)
     h1, hsp, h2 = st.columns([1,6,3])
     with h1:
